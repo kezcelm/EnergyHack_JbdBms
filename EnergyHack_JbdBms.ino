@@ -2,6 +2,9 @@
 #include "mcp_can.h"
 #include "CanFrame.h"
 
+#include <avr/sleep.h>
+#include <avr/interrupt.h>
+
 //--------------------------------------------------------------------------
 
 #define SLEEP_PIN 3
@@ -32,6 +35,13 @@ int batteryCurrent = 0;
 unsigned int balanceCapacity = myBms.getBalanceCapacity();
 unsigned int ratedCapacity = myBms.getRateCapacity();
 unsigned int socCapacity = 0;
+
+uint8_t mosSetup = 0x03; 
+uint8_t mosActual = mosSetup;
+  /* 0x03  chg - OFF dis OFF
+     0x02  chg - ON dis OFF
+     0x01  chg - OFF dis ON
+     0x00  chg - ON dis ON */
 
 //--------------------------------------------------------------------------
 // Data for time checking
@@ -67,6 +77,8 @@ void setup()
   CAN.begin(CAN_500KBPS, MCP_8MHz);
   CAN.setMode(MODE_NORMAL);
   pinMode(SLEEP_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(SLEEP_PIN), wakeUp, FALLING);
+  myBms.setMosfet(mosSetup);
 }
 
 void MCP2515_ISR()
@@ -76,6 +88,12 @@ void MCP2515_ISR()
 
 void loop()
 {
+  if (digitalRead(SLEEP_PIN) == HIGH) {  // go to sleep if not connected
+    delay(100);
+    goToSleep();
+    delay(500);
+  }
+
   flagRecv = 0;                   // clear flag
   lastBusActivity = millis();
   actTime = millis();
@@ -92,6 +110,18 @@ void loop()
     ratedCapacity = myBms.getRateCapacity(); //17250
     socCapacity = ((float)balanceCapacity / 100) * batterySOC;
 
+    // check if charging is allowed
+    if (batterySOC < 100){
+      mosSetup = 0x00;  // charging allowed
+    }  
+    else{
+      mosSetup = 0x01;  // charging not allowed
+    }
+    if (mosSetup != mosActual){
+      mosActual = mosSetup;
+      myBms.setMosfet(mosSetup);
+    }
+
     data781[0] = batterySOC;
     data781[6] = highByte(ratedCapacity);
     data781[5] = lowByte(ratedCapacity);
@@ -107,12 +137,6 @@ void loop()
     data593[3] = highByte(batteryCycle);
     data593[2] = lowByte(batteryCycle);
 
-    // if (batteryVoltage>=41000){ //stop chargingwhen
-    //   myBms.stopCharging();
-    // }
-
-    // TMP just to check battery capacity
-    // store Coulomb counter value in CAN 591 frame data
     data591[0] = 0x00;
     data591[1] = 0x00;
     data591[2] = 0x00;
@@ -120,8 +144,42 @@ void loop()
     data591[3] = lowByte(batteryVoltage); //shov actual voltage
 
     copy_frames();
-  }
 
+    // if (batteryVoltage>=41000){ //stop chargingwhen
+      // myBms.setMosfet(0x01);
+    // }
+  }
+  checkCanBus();
+}
+
+void goToSleep() {
+  // set mosfet to off/off
+  mosSetup = 0x03;
+  if (mosSetup != mosActual){
+    mosActual = mosSetup;
+    myBms.setMosfet(mosSetup);
+  }
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_enable();
+
+  noInterrupts(); 
+  EIFR = bit(INTF1);
+  interrupts(); 
+
+  sleep_cpu();
+
+  sleep_disable();
+}
+
+void wakeUp() {
+  mosSetup = 0x01;
+  if (mosSetup != mosActual){
+    mosActual = mosSetup;
+    myBms.setMosfet(mosSetup);
+  }
+}
+
+void checkCanBus(){
   while (CAN_MSGAVAIL == CAN.checkReceive()) 
   {
     // read data,  len: data length, buf: data buf
@@ -195,7 +253,6 @@ void loop()
     }
   }
 }
-
 
 void copy_frames(){
   *(data580+0) = *(data780+0);
