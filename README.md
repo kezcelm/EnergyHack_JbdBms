@@ -20,10 +20,14 @@ The project uses the following components:
 - MCP2515 – CAN controller that enables Arduino to communicate with the e-bike via CAN Bus.  
 - Language: C++ (Arduino IDE).  
 
+### Libraries / Dependencies
+
+- This project uses the **[JbdBms](https://github.com/rakhmaevao/JbdBms)** library, with a few minor modifications to fit the needs of this simulation.
+
+
 ## Installation
 
 1. Clone the repository:  
-   ```bash
    git clone https://github.com/kezcelm/EnergyHack_JbdBms.git
 
 2. Open the project in Arduino IDE:
