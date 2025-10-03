@@ -16,28 +16,34 @@ MCP_CAN CAN(SPI_CS_PIN);              // Set CS pin
 #define RS_TO_MCP2515 true            // Set this to false if Rs is connected to your Arduino
 #define RS_OUTPUT MCP_RX0BF           // RX0BF is a pin of the MCP2515. You can also define an Arduino pin here
 
+// Sleep CAN BUS
 unsigned char flagRecv = 0;
 unsigned char len = 0;
 unsigned char buf[8];
 int lastLen = -1;
 unsigned char lastBuf[8];                                    
 unsigned long lastMsgTime = 0;
-unsigned long lastBusActivity = millis();
+unsigned long lastBusActivity = 0;
 
 //--------------------------------------------------------------------------
 // BMS data setup
+#define MAX_CHARGE_VOLTAGE 41500
 JbdBms myBms(7, 8); // RX, TX
 
-uint8_t batterySOC = 0;
-uint16_t batteryCycle = 0;
-uint16_t batteryVoltage = 0;
-int batteryCurrent = 0;
-uint16_t balanceCapacity = 0;
-uint16_t rateCapacity = 0;
-uint16_t socCapacity = 0;
+struct BatteryStatus {
+  uint8_t soc;            // State of charge [%]
+  uint16_t cycle;
+  uint16_t voltage;       // [mV]
+  int current;            // [mA]
+  uint16_t balanceCapacity;
+  uint16_t rateCapacity;
+  uint16_t socCapacity;
+  uint8_t mosActual;
+};
+BatteryStatus battery; 
 
-uint8_t mosActual = 0x03;
-  /* 0x03  chg - OFF dis OFF
+  /* mosActual
+     0x03  chg - OFF dis OFF
      0x02  chg - ON dis OFF
      0x01  chg - OFF dis ON
      0x00  chg - ON dis ON */
@@ -69,29 +75,29 @@ CanFrame frame782(0x782, 0, 4, data782);
 CanFrame frame783(0x783, 0, 5, data783);
 CanFrame frame784(0x784, 0, 3, data784);
 
-
-void setup()
-{
+void setup() {
   Serial.begin(9600);
+
   CAN.begin(CAN_500KBPS, MCP_8MHz);
   CAN.setMode(MODE_NORMAL);
+  lastBusActivity = millis();
+
   pinMode(SLEEP_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SLEEP_PIN), wakeUp, FALLING);
-  myBms.setMosfet(mosActual);
+
+  myBms.setMosfet(battery.mosActual);
 }
 
-void MCP2515_ISR()
-{
+void MCP2515_ISR() {
     flagRecv  = 1;
 }
 
-void loop()
-{
-  // if (digitalRead(SLEEP_PIN) == HIGH) {  // go to sleep if not connected
-  //   delay(100);
-  //   goToSleep();
-  //   delay(500);
-  // }
+void loop() {
+  if (digitalRead(SLEEP_PIN) == HIGH) {  // go to sleep if not connected
+    delay(100);
+    goToSleep();
+    delay(500);
+  }
 
   flagRecv = 0;                   // clear flag
   lastBusActivity = millis();
@@ -99,45 +105,8 @@ void loop()
   if (actTime - prevTime >= 1000UL)    // read battery data in every 1s
   {
     prevTime = actTime;
-    myBms.readBmsData();
-    batterySOC = myBms.getChargePercentage();
-    batteryVoltage = myBms.getVoltage();
-    batteryCurrent = (int)myBms.getCurrent();
-    batteryCycle = myBms.getCycle();
-    balanceCapacity = myBms.getBalanceCapacity(); // 16150
-    rateCapacity = myBms.getRateCapacity(); //17250
-    socCapacity = ((float)balanceCapacity / 100) * batterySOC;
-
-    // check if charging is allowed
-    if (batteryVoltage < 40500){
-      setupMosfet(0x00);  // charging allowed
-    }  
-    else{
-      setupMosfet(0x01); // charging not allowed 
-    }
-
-    data781[0] = batterySOC;
-    data781[6] = highByte(rateCapacity);
-    data781[5] = lowByte(rateCapacity);
-    data781[4] = highByte(balanceCapacity);
-    data781[3] = lowByte(balanceCapacity);
-    data781[2] = highByte(socCapacity);
-    data781[1] = lowByte(socCapacity);
-
-    data782[3] = highByte(batteryVoltage);
-    data782[2] = lowByte(batteryVoltage);
-    data782[1] = highByte(batteryCurrent);
-    data782[0] = lowByte(batteryCurrent);
-    data593[3] = highByte(batteryCycle);
-    data593[2] = lowByte(batteryCycle);
-
-    data591[0] = 0x00;
-    data591[1] = 0x00;
-    data591[2] = 0x00;
-    data591[4] = highByte(batteryVoltage);
-    data591[3] = lowByte(batteryVoltage); //shov actual voltage
-
-    copy_frames();
+    updateBatteryFrames();
+    copyFrames();
   }
   checkCanBus();
 }
@@ -160,114 +129,85 @@ void wakeUp() {
   setupMosfet(0x01);
 }
 
-void setupMosfet(uint8_t mosSetup){
-  if (mosSetup != mosActual){
-    mosActual = mosSetup;
+void setupMosfet(uint8_t mosSetup) {
+  if (mosSetup != battery.mosActual){
+    battery.mosActual = mosSetup;
     myBms.setMosfet(mosSetup);
   }
 }
 
-void checkCanBus(){
-  while (CAN_MSGAVAIL == CAN.checkReceive()) 
-  {
-    // read data,  len: data length, buf: data buf
+void updateBatteryFrames() {
+  // odczyt danych z BMS
+  myBms.readBmsData();
+  battery.soc = myBms.getChargePercentage();
+  battery.voltage = myBms.getVoltage();
+  battery.current = (int)myBms.getCurrent();
+  battery.cycle = myBms.getCycle();
+  battery.balanceCapacity = myBms.getBalanceCapacity();
+  battery.rateCapacity = myBms.getRateCapacity();
+  battery.socCapacity = ((float)battery.balanceCapacity / 100) * battery.soc;
+
+  // sterowanie MOSFETem ładowania
+  if (battery.voltage < MAX_CHARGE_VOLTAGE){
+    setupMosfet(0x00);  // charging allowed
+  } else {
+    setupMosfet(0x01);  // charging not allowed
+  }
+
+  // aktualizacja danych w ramkach CAN
+  data781[0] = battery.soc;
+  data781[6] = highByte(battery.rateCapacity);
+  data781[5] = lowByte(battery.rateCapacity);
+  data781[4] = highByte(battery.balanceCapacity);
+  data781[3] = lowByte(battery.balanceCapacity);
+  data781[2] = highByte(battery.socCapacity);
+  data781[1] = lowByte(battery.socCapacity);
+
+  data782[3] = highByte(battery.voltage);
+  data782[2] = lowByte(battery.voltage);
+  data782[1] = highByte(battery.current);
+  data782[0] = lowByte(battery.current);
+
+  data593[3] = highByte(battery.cycle);
+  data593[2] = lowByte(battery.cycle);
+
+  data591[0] = 0x00;
+  data591[1] = 0x00;
+  data591[2] = 0x00;
+  data591[4] = highByte(battery.voltage);
+  data591[3] = lowByte(battery.voltage);
+}
+
+void checkCanBus() {
+  while (CAN_MSGAVAIL == CAN.checkReceive()) {
     CAN.readMsgBuf(&len, buf);
     lastLen = len;
     memcpy(lastBuf, buf, sizeof(buf));
     lastMsgTime = millis();
 
-    switch (CAN.getCanId())
-    {
-      case 0x020: //  0x40000020
-        data59F[0] = 0x01;
-        frame59F.sendCAN(CAN);
+    unsigned long id = CAN.getCanId();
+
+    if (id == 0x020) {
+      data59F[0] = 0x01;
+    } else if (id == 0x120) {
+      data59F[0] = 0x00;
+    }
+
+    for (uint8_t i = 0; i < mappingsCount; i++) {
+      if (mappings[i].id == id) {
+        for (uint8_t j = 0; j < mappings[i].count; j++) {
+          mappings[i].frames[j]->sendCAN(CAN);
+        }
         break;
-      case 0x120:
-        data59F[0] = 0x00;
-        frame59F.sendCAN(CAN);
-        break;
-      case 0x42C:
-        frame590.sendCAN(CAN);
-        frame591.sendCAN(CAN);
-        frame592.sendCAN(CAN);
-        break;
-      case 0x22C:
-        frame580.sendCAN(CAN);
-        frame581.sendCAN(CAN);
-        frame582.sendCAN(CAN);
-        frame583.sendCAN(CAN);
-        break;
-      case 0x26C:
-        frame580.sendCAN(CAN);
-        frame581.sendCAN(CAN);
-        frame583.sendCAN(CAN);
-        break;
-      case 0x52C:
-        frame593.sendCAN(CAN);
-        frame594.sendCAN(CAN);
-        frame595.sendCAN(CAN);
-        break;
-      case 0x72C:
-        frame59A.sendCAN(CAN);
-        frame59B.sendCAN(CAN);
-        break;
-      case 0x641:
-        frame780.sendCAN(CAN);
-        frame781.sendCAN(CAN);
-        frame782.sendCAN(CAN);
-        frame784.sendCAN(CAN);
-        break;
-//charging
-      case 0x7C0:
-        frame780.sendCAN(CAN);
-        break;
-      case 0x7C1:
-        frame781.sendCAN(CAN);
-        break;
-      case 0x7C2:
-        frame782.sendCAN(CAN);
-        frame783.sendCAN(CAN);
-        frame784.sendCAN(CAN);
-        break;
-      case 0x2EC:
-    Serial.println("Start 0x2EC");
-        frame580.sendCAN(CAN);
-        frame581.sendCAN(CAN);
-        frame582.sendCAN(CAN);
-        frame583.sendCAN(CAN);
-        break;
-      default:
-        break;
+      }
     }
   }
 }
 
-void copy_frames(){
-  *(data580+0) = *(data780+0);
-  *(data580+1) = *(data780+1);
-  *(data580+2) = *(data780+2);
-
-  *(data581+0) = *(data781+0);
-  *(data581+1) = *(data781+1);
-  *(data581+2) = *(data781+2);
-  *(data581+3) = *(data781+3);
-  *(data581+4) = *(data781+4);
-  *(data581+5) = *(data781+5);
-  *(data581+6) = *(data781+6);
-
-  *(data582+0) = *(data782+0);
-  *(data582+1) = *(data782+1);
-  *(data582+2) = *(data782+2);
-  *(data582+3) = *(data782+3);
-
-  *(data583+0) = *(data783+0);
-  *(data583+1) = *(data783+1);
-  *(data583+2) = *(data783+2);
-  *(data583+3) = *(data783+3);
-  *(data583+4) = *(data783+4);
-
-  *(data584+0) = *(data784+0);
-  *(data584+1) = *(data784+1);
-  *(data584+2) = *(data784+2);
-  *(data584+3) = *(data784+3);
+void copyFrames() {
+  memcpy(data580, data780, 3);
+  memcpy(data581, data781, 7);
+  memcpy(data582, data782, 4);
+  memcpy(data583, data783, 5);
+  memcpy(data584, data784, 4);
 }

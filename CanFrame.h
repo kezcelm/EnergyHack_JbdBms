@@ -5,11 +5,9 @@
 #include "mcp_can.h"
 
 class CanFrame {
-  
-	public:
+public:
     CanFrame(unsigned long can_id, byte can_ext, byte can_dlc, byte *data);
     void sendCAN(MCP_CAN CAN);
-
 
     unsigned long can_id;
     byte can_ext;
@@ -36,5 +34,18 @@ extern byte data781[];
 extern byte data782[];
 extern byte data783[];
 extern byte data784[];
+
+// ------------------------------
+// NOWE: struktura mapowania CAN
+// ------------------------------
+struct CanMapping {
+    unsigned long id;       // ID z CAN (11-bit lub 29-bit)
+    CanFrame* frames[5];    // wskaźniki na ramki do wysłania (max 5)
+    uint8_t count;          // ile ramek w tym ID
+};
+
+// deklaracja tablicy mapowań (definicja będzie w CanFrame.cpp)
+extern CanMapping mappings[];
+extern const uint8_t mappingsCount;
 
 #endif
