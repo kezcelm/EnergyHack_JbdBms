@@ -32,6 +32,7 @@ The project uses the following components:
 
 2. Open the project in Arduino IDE:
 Main file: EnergyHack_JbdBms.ino
+
 Ensure the JbdBms and mcp2515 libraries are located in the libraries folder.
 
 3. Connect Arduino, Jiabida BMS, and MCP2515 according to the wiring diagram
