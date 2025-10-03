@@ -28,16 +28,15 @@ unsigned long lastBusActivity = millis();
 // BMS data setup
 JbdBms myBms(7, 8); // RX, TX
 
-unsigned char batterySOC = 0;
-unsigned int batteryCycle = 0;
-unsigned int batteryVoltage = 0;
+uint8_t batterySOC = 0;
+uint16_t batteryCycle = 0;
+uint16_t batteryVoltage = 0;
 int batteryCurrent = 0;
-unsigned int balanceCapacity = myBms.getBalanceCapacity();
-unsigned int ratedCapacity = myBms.getRateCapacity();
-unsigned int socCapacity = 0;
+uint16_t balanceCapacity = 0;
+uint16_t rateCapacity = 0;
+uint16_t socCapacity = 0;
 
-uint8_t mosSetup = 0x03; 
-uint8_t mosActual = mosSetup;
+uint8_t mosActual = 0x03;
   /* 0x03  chg - OFF dis OFF
      0x02  chg - ON dis OFF
      0x01  chg - OFF dis ON
@@ -78,7 +77,7 @@ void setup()
   CAN.setMode(MODE_NORMAL);
   pinMode(SLEEP_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SLEEP_PIN), wakeUp, FALLING);
-  myBms.setMosfet(mosSetup);
+  myBms.setMosfet(mosActual);
 }
 
 void MCP2515_ISR()
@@ -88,17 +87,16 @@ void MCP2515_ISR()
 
 void loop()
 {
-  if (digitalRead(SLEEP_PIN) == HIGH) {  // go to sleep if not connected
-    delay(100);
-    goToSleep();
-    delay(500);
-  }
+  // if (digitalRead(SLEEP_PIN) == HIGH) {  // go to sleep if not connected
+  //   delay(100);
+  //   goToSleep();
+  //   delay(500);
+  // }
 
   flagRecv = 0;                   // clear flag
   lastBusActivity = millis();
   actTime = millis();
-  if (actTime - prevTime >= 1000UL)    // read battery level in every 1s
- 
+  if (actTime - prevTime >= 1000UL)    // read battery data in every 1s
   {
     prevTime = actTime;
     myBms.readBmsData();
@@ -107,24 +105,20 @@ void loop()
     batteryCurrent = (int)myBms.getCurrent();
     batteryCycle = myBms.getCycle();
     balanceCapacity = myBms.getBalanceCapacity(); // 16150
-    ratedCapacity = myBms.getRateCapacity(); //17250
+    rateCapacity = myBms.getRateCapacity(); //17250
     socCapacity = ((float)balanceCapacity / 100) * batterySOC;
 
     // check if charging is allowed
-    if (batterySOC < 100){
-      mosSetup = 0x00;  // charging allowed
+    if (batteryVoltage < 40500){
+      setupMosfet(0x00);  // charging allowed
     }  
     else{
-      mosSetup = 0x01;  // charging not allowed
-    }
-    if (mosSetup != mosActual){
-      mosActual = mosSetup;
-      myBms.setMosfet(mosSetup);
+      setupMosfet(0x01); // charging not allowed 
     }
 
     data781[0] = batterySOC;
-    data781[6] = highByte(ratedCapacity);
-    data781[5] = lowByte(ratedCapacity);
+    data781[6] = highByte(rateCapacity);
+    data781[5] = lowByte(rateCapacity);
     data781[4] = highByte(balanceCapacity);
     data781[3] = lowByte(balanceCapacity);
     data781[2] = highByte(socCapacity);
@@ -144,21 +138,12 @@ void loop()
     data591[3] = lowByte(batteryVoltage); //shov actual voltage
 
     copy_frames();
-
-    // if (batteryVoltage>=41000){ //stop chargingwhen
-      // myBms.setMosfet(0x01);
-    // }
   }
   checkCanBus();
 }
 
 void goToSleep() {
-  // set mosfet to off/off
-  mosSetup = 0x03;
-  if (mosSetup != mosActual){
-    mosActual = mosSetup;
-    myBms.setMosfet(mosSetup);
-  }
+  setupMosfet(0x03);
   set_sleep_mode(SLEEP_MODE_PWR_DOWN);
   sleep_enable();
 
@@ -172,7 +157,10 @@ void goToSleep() {
 }
 
 void wakeUp() {
-  mosSetup = 0x01;
+  setupMosfet(0x01);
+}
+
+void setupMosfet(uint8_t mosSetup){
   if (mosSetup != mosActual){
     mosActual = mosSetup;
     myBms.setMosfet(mosSetup);
